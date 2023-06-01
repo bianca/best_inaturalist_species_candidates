@@ -1,8 +1,6 @@
-from sympy import Point, Polygon
-from shapely.geometry import shape
-import shapefile
-import shapely
-
+import geopandas as gpd
+from geopandas.tools import sjoin
+import csv
 '''
     Purpose:
 
@@ -14,47 +12,51 @@ import shapely
 
 '''
 species_dict = {}
-ch_shape = shapefile.Reader("data/crithab_all_layers/CRITHAB_POLY.shp")
-ch_shaperecords = ch_shape.shapeRecords()
-coverage_shape = shapefile.Reader("data/ATT_Mobility_LTE_Data/ATT_Mobility_349875.shp")
-coverage_shaperecords = coverage_shape.shapeRecords()
+ch_df = gpd.read_file(r'data/crithab_all_layers/CRITHAB_POLY.shp')
+ch_df['ch_geometry'] = ch_df.geometry
+coverage_df = gpd.read_file(r'data/ATT_Mobility_LTE_Data/ATT_Mobility_349875.shp')
+coverage_df['coverage_geometry'] = coverage_df.geometry
 
-'''
-# print species names
-species_names = []
-for x in range(0, len(ch_shaperecords)):
-    if ch_shaperecords[x].record[1] not in species_names:
-        species_names.append(ch_shaperecords[x].record[1])
-'''
-coverage_standard_area = shape(coverage_shaperecords[0].shape).area
+with open('whitelisted_species.csv', newline='\n') as csvfile:
+    whitelisted_items = csv.DictReader(csvfile)
+    whitelisted = [row['species'] for row in whitelisted_items]
+    #print(whitelisted)
+    csvfile.close()
 
-# go through each critical habitat polygon and check how many mobility coverage polygons fit within it
-for x in range(0, len(ch_shaperecords)):
-    print(x)
-    if ch_shaperecords[x].record[1].find("larkspur") == -1:
-         continue
-    habitat_shape = shape(ch_shaperecords[x].shape)
-    species_name = ch_shaperecords[x].record[1]
-    for y in range(0, len(coverage_shaperecords)):
-        print("    ",y)
-        coverage_shape = shape(coverage_shaperecords[y].shape)
-        if habitat_shape.contains(coverage_shape):
-            # group all the critical habitat polygons together by species
-            if species_name not in species_dict:
-                species_dict[species_name] = {
-                    "score" : 0,
-                    "habitat_area": 0
-                }
-            species_dict[species_name]['score'] += 1
-            species_dict[species_name]["habitat_area"] += habitat_shape.area
+ch_df = ch_df[ch_df.comname.isin(whitelisted)]
+
+joined_geometries = ch_df.sjoin(coverage_df)
+
+for index,row in joined_geometries.iterrows():
+    species_name = row['comname']
+    # group all the critical habitat polygons together by species
+    if species_name not in species_dict:
+        species_dict[species_name] = {
+            "coverage_area" : 0,
+            "original_habitat_area": 0
+        }
+    species_dict[species_name]['coverage_area'] += row.ch_geometry.intersection(row.coverage_geometry).area
+    species_dict[species_name]["original_habitat_area"] += row.ch_geometry.area
+
 
 
 for sn in species_dict:
     species_dict[sn]['species_name'] = sn
     # multiply the number of mobility coverage polygons by the area the polygons covered and divide by the sum of all the areas of each species shapefile
-    species_dict[sn]["percentage_of_area"] = species_dict[sn]['score']*coverage_standard_area/species_dict[sn]["habitat_area"]
+    
+    species_dict[sn]["percentage_of_area"] = species_dict[sn]["coverage_area"]/species_dict[sn]["original_habitat_area"]
+    #print(f'{species_dict[sn]["percentage_of_area"]} = {species_dict[sn]["coverage_area"]}/{species_dict[sn]["original_habitat_area"]}')
 
 # sort each species by critical habitat mobility coverage
-species_list = (species_dict.values()).sort(key="percentage_of_area")
+species_list = list(species_dict.values())
 
-print(species_list)
+def sort_by_area(the_dict):
+    return the_dict['percentage_of_area']
+
+species_list.sort(key=sort_by_area, reverse=True)
+
+#print(species_list)
+for i,row in enumerate(species_list):
+    if i >= 10: 
+        break
+    print(species_list[i]['species_name'], " - ", round(species_list[i]['percentage_of_area']*100, 2),"%")
